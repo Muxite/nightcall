@@ -1,0 +1,31 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "linux",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-linux",
+        "NIGHTCALL_BUILD_PYTHON": "ON",
+        "NIGHTCALL_BUILD_TESTS": "ON",
+        "Python_EXECUTABLE": "/usr/bin/python3"
+      }
+    },
+    {
+      "name": "default",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "c:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
+        "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic",
+        "NIGHTCALL_BUILD_PYTHON": "ON",
+        "Python_EXECUTABLE": "C:/Python314/python.exe",
+        "Python_ROOT_DIR": "C:/Python314",
+        "pybind11_DIR": "C:/Users/mukch/AppData/Roaming/Python/Python314/site-packages/pybind11/share/cmake/pybind11"
+      }
+    }
+  ]
+}

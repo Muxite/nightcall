@@ -1,0 +1,38 @@
+# Build / vcpkg
+build/
+vcpkg_installed/
+CMakeUserPresets.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+venv/
+.venv/
+env/
+
+# Training & local outputs
+checkpoints/
+sweep_results/
+runs/
+*.pt
+replay.jsonl
+replay.gif
+
+# IDE / OS
+.idea/
+.vs/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.*

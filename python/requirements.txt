@@ -1,0 +1,18 @@
+# nightcall Python training pipeline dependencies
+#
+# Install with:
+#   pip install -r python/requirements.txt
+#
+# Notes:
+#   - torch wheels for Python 3.14 may not yet be available on PyPI.
+#     Use Python 3.10–3.12 for training if pip install torch fails.
+#     The nightcall_sim C++ module itself works with any Python >= 3.10.
+#   - pybind11 is installed separately via pip (not vcpkg) because
+#     vcpkg's pybind11 port does not support the x64-mingw-dynamic triplet.
+#     Build-time install: pip install pybind11
+
+pybind11>=2.13.0
+numpy>=1.24.0
+gymnasium>=0.29.0
+torch>=2.2.0
+onnx>=1.16.0

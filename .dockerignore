@@ -1,0 +1,12 @@
+.git
+build
+vcpkg_installed
+**/__pycache__
+*.pyc
+*.pyd
+checkpoints
+sweep_results
+*.pt
+*.onnx
+replay.gif
+replay.jsonl

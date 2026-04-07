@@ -1,0 +1,12 @@
+{
+  "name": "nightcall",
+  "version": "0.1.0",
+  "dependencies": [
+    { "name": "catch2",        "version>=": "3.7.0"  },
+    { "name": "spdlog",        "version>=": "1.14.0" },
+    { "name": "nlohmann-json", "version>=": "3.11.2" },
+    { "name": "pybind11",      "version>=": "2.13.0" }
+  ],
+  "overrides": [],
+  "builtin-baseline": "81e3c888ef717a026eb57bb2f3cb0dbd30246271"
+}

@@ -1,0 +1,2 @@
+add_executable(replay_logger replay_logger.cpp)
+target_link_libraries(replay_logger PRIVATE nightcall_engine)
