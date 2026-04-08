@@ -20,6 +20,7 @@ env/
 # Training & local outputs
 checkpoints/
 sweep_results/
+results/
 runs/
 *.pt
 replay.jsonl

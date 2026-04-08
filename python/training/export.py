@@ -47,7 +47,7 @@ def export(checkpoint_path: str, out_path: str, opset: int = 17):
     out.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading checkpoint: {ckpt_path}")
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     state_dict = ckpt.get("model", ckpt)   # handle both raw and wrapped dicts
 
     full_model = NightcallActorCritic()

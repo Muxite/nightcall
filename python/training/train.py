@@ -15,7 +15,11 @@ Typical invocation:
     python python/training/train.py --p2-policy scripted
     python python/training/train.py --p2-policy neural --steps 2_000_000 --envs 8
 
-Checkpoints are saved to checkpoints/ckpt_<step>.pt every SAVE_INTERVAL steps.
+Checkpoints go under ``--checkpoint-dir`` (default ``checkpoints``), created if missing;
+``ckpt_<step>.pt`` every ``--save-interval`` updates, then ``ckpt_final.pt``.
+Use ``--load-checkpoint PATH`` for warm-start, or add ``--resume`` to restore step count
+and optimizer when saved. Docker defaults live in ``docker/train.env`` (same keys as env vars).
+Logs include remaining env-steps and ETA from measured SPS.
 TensorBoard logs are written to runs/ (tensorboard --logdir runs).
 """
 
@@ -23,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import math
 import os
 import sys
 import time
@@ -39,6 +44,59 @@ sys.path.insert(0, str(_HERE.parent.parent / "build" / "python"))  # nightcall_s
 
 from env   import NightcallEnv, MAX_P1_UNITS, N_UNIT_ACTIONS, FEATURE_DIM
 from model import NightcallActorCritic
+
+
+def _ensure_output_dir(path_str: str) -> Path:
+    """
+    Resolve ``path_str`` against the process working directory if relative,
+    create all missing directories, and return an absolute Path.
+
+    :param path_str: Directory where checkpoints and ``ckpt_final.pt`` are written.
+    :returns: Absolute, normalized path.
+    """
+    p = Path(path_str).expanduser()
+    if not p.is_absolute():
+        p = (Path.cwd() / p).resolve()
+    else:
+        p = p.resolve()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _resolve_path(path_str: str) -> Path:
+    """
+    Resolve a file or directory path for reading (must exist for files checked by caller).
+
+    :param path_str: Relative (to cwd) or absolute path string.
+    :returns: Absolute normalized Path.
+    """
+    p = Path(path_str).expanduser()
+    if not p.is_absolute():
+        p = (Path.cwd() / p).resolve()
+    else:
+        p = p.resolve()
+    return p
+
+
+def _format_duration(seconds: float) -> str:
+    """
+    Format a duration in seconds for ETA display.
+
+    :param seconds: Non-negative wall time in seconds.
+    :returns: Short human-readable string.
+    """
+    if seconds < 0 or not math.isfinite(seconds):
+        return "?"
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    minutes = int(seconds // 60)
+    if minutes < 120:
+        secs = int(seconds % 60)
+        return f"{minutes}m {secs:02d}s"
+    hours = int(seconds // 3600)
+    mins = int((seconds % 3600) // 60)
+    return f"{hours}h {mins:02d}m"
+
 
 # ── Hyper-parameters ──────────────────────────────────────────────────────────
 
@@ -63,6 +121,61 @@ DEFAULTS = dict(
     checkpoint_dir           = "checkpoints",
     log_interval             = 10,
 )
+
+
+def _truthy_env(name: str) -> bool:
+    """
+    Return True if the environment variable is set to a common affirmative value.
+
+    :param name: Variable name.
+    :returns: Whether the value looks like true/on/yes/1.
+    """
+    v = os.environ.get(name, "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _maybe_post_train_render(cfg: dict, final_ckpt: Path) -> None:
+    """
+    If ``RENDER_AFTER_TRAIN`` is set, generate baseline/trained MP4s under ``RESULTS_DIR``.
+
+    :param cfg: Training configuration.
+    :param final_ckpt: Path to ``ckpt_final.pt`` just written.
+    """
+    if not _truthy_env("RENDER_AFTER_TRAIN"):
+        return
+    rd = (os.environ.get("RESULTS_DIR") or "results").strip() or "results"
+    try:
+        from render_run import post_train_render
+
+        post_train_render(final_ckpt, cfg, Path(rd))
+    except Exception as exc:
+        print(f"WARNING: post-training render failed: {exc}")
+
+
+def _cli_defaults() -> dict:
+    """
+    Merge :data:`DEFAULTS` with the process environment (e.g. ``docker/train.env``).
+
+    Variables: ``TOTAL_STEPS``, ``NUM_ENVS``, ``P2_POLICY``, ``CHECKPOINT_DIR``.
+    Post-render: ``RENDER_AFTER_TRAIN``, ``RESULTS_DIR``, ``RENDER_*`` (see ``render_run.py``).
+    CLI flags still override these when passed explicitly.
+
+    :returns: A copy of defaults with env overrides applied.
+    """
+    d = dict(DEFAULTS)
+    ts = os.environ.get("TOTAL_STEPS", "").strip()
+    if ts:
+        d["total_steps"] = int(ts)
+    ne = os.environ.get("NUM_ENVS", "").strip()
+    if ne:
+        d["num_envs"] = int(ne)
+    p2 = os.environ.get("P2_POLICY", "").strip()
+    if p2:
+        d["p2_policy"] = p2
+    cd = os.environ.get("CHECKPOINT_DIR", "").strip()
+    if cd:
+        d["checkpoint_dir"] = cd
+    return d
 
 
 # ── Vectorised environment (simple synchronous wrapper) ───────────────────────
@@ -196,10 +309,13 @@ def train(cfg: dict):
     dev_name = str(device)
     if device.type == "cuda" and torch.cuda.is_available():
         dev_name = f"{device} ({torch.cuda.get_device_name(0)})"
-    print(f"Training on {dev_name}  |  {cfg['num_envs']} envs  |  "
-          f"{cfg['total_steps']:,} steps")
 
-    Path(cfg["checkpoint_dir"]).mkdir(parents=True, exist_ok=True)
+    checkpoint_root = _ensure_output_dir(cfg["checkpoint_dir"])
+    steps_per_update = cfg["rollout_steps"] * cfg["num_envs"]
+
+    print(f"Training on {dev_name}  |  {cfg['num_envs']} envs  |  "
+          f"target {cfg['total_steps']:,} env-steps")
+    print(f"Checkpoints -> {checkpoint_root}")
 
     # Models
     model    = NightcallActorCritic().to(device)
@@ -207,9 +323,49 @@ def train(cfg: dict):
     opponent.eval()
     optimiser = torch.optim.Adam(model.parameters(), lr=cfg["lr_start"], eps=1e-5)
 
-    total_updates = cfg["total_steps"] // (cfg["rollout_steps"] * cfg["num_envs"])
+    total_steps = 0
+    update_num = 0
+    load_path = (cfg.get("load_checkpoint") or "").strip()
+    if load_path:
+        ckpt_path = _resolve_path(load_path)
+        if not ckpt_path.is_file():
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        ckpt_p2 = ckpt.get("p2_policy")
+        if ckpt_p2 is not None and ckpt_p2 != cfg["p2_policy"]:
+            raise ValueError(
+                f"Checkpoint p2_policy={ckpt_p2!r} does not match --p2-policy {cfg['p2_policy']!r}"
+            )
+        model.load_state_dict(ckpt["model"])
+        neural_p2 = cfg.get("p2_policy", "scripted") == "neural"
+        if neural_p2:
+            if "opponent" in ckpt:
+                opponent.load_state_dict(ckpt["opponent"])
+            else:
+                opponent.load_state_dict(copy.deepcopy(model.state_dict()))
+        opponent.eval()
+        if cfg.get("resume"):
+            total_steps = int(ckpt.get("step", 0))
+            update_num = int(ckpt.get("update", 0))
+            if "opt" in ckpt:
+                optimiser.load_state_dict(ckpt["opt"])
+            else:
+                print("  (checkpoint has no optimizer state; continuing with fresh optimizer)")
+            print(
+                f"Resumed from {ckpt_path}  |  step={total_steps:,}  update={update_num}  "
+                f"target steps={cfg['total_steps']:,}"
+            )
+        else:
+            print(f"Loaded weights from {ckpt_path} (fresh step count and optimizer)")
+    else:
+        neural_p2 = cfg.get("p2_policy", "scripted") == "neural"
 
-    neural_p2 = cfg.get("p2_policy", "scripted") == "neural"
+    total_updates = max(1, cfg["total_steps"] // steps_per_update)
+    print(
+        f"Schedule: ~{total_updates} PPO updates  |  {steps_per_update:,} env-steps per update  "
+        f"(ETA logged from measured throughput)"
+    )
+
     envs = VecEnv(
         cfg["num_envs"],
         p2_policy="neural" if neural_p2 else "scripted",
@@ -229,9 +385,7 @@ def train(cfg: dict):
     val_buf    = torch.zeros(T, N, device=device)
     done_buf   = torch.zeros(T, N, dtype=torch.bool, device=device)
 
-    total_steps = 0
-    update_num  = 0
-    t_start     = time.time()
+    t_start = time.time()
 
     while total_steps < cfg["total_steps"]:
         # ── Collect rollout ───────────────────────────────────────────────────
@@ -322,7 +476,10 @@ def train(cfg: dict):
         # ── Logging ───────────────────────────────────────────────────────────
         if update_num % cfg["log_interval"] == 0:
             elapsed = time.time() - t_start
-            sps     = total_steps / elapsed
+            sps     = total_steps / elapsed if elapsed > 0 else 0.0
+            remain  = max(0, cfg["total_steps"] - total_steps)
+            eta_s   = remain / sps if sps > 1e-9 else float("nan")
+            eta_h   = _format_duration(eta_s) if math.isfinite(eta_s) else "?"
             print(
                 f"step={total_steps:>8,}  "
                 f"update={update_num:>5}  "
@@ -330,7 +487,8 @@ def train(cfg: dict):
                 f"vf={total_vf_loss/n_updates:.4f}  "
                 f"ent={total_ent/n_updates:.4f}  "
                 f"lr={lr:.2e}  ent_c={ent_coef:.4f}  "
-                f"sps={sps:.0f}"
+                f"sps={sps:.0f}  "
+                f"rem={remain:>8,}  eta≈{eta_h}"
             )
 
         # ── Update opponent snapshot ──────────────────────────────────────────
@@ -340,7 +498,7 @@ def train(cfg: dict):
 
         # ── Checkpoint ────────────────────────────────────────────────────────
         if update_num % cfg["save_interval"] == 0:
-            path = Path(cfg["checkpoint_dir"]) / f"ckpt_{total_steps}.pt"
+            path = checkpoint_root / f"ckpt_{total_steps}.pt"
             ckpt = {
                 "model":      model.state_dict(),
                 "opt":        optimiser.state_dict(),
@@ -353,26 +511,34 @@ def train(cfg: dict):
             torch.save(ckpt, path)
             print(f"  -> saved {path}")
 
-    # Final checkpoint
-    path = Path(cfg["checkpoint_dir"]) / "ckpt_final.pt"
-    ckpt_final = {"model": model.state_dict(), "step": total_steps, "p2_policy": cfg["p2_policy"]}
+    path = checkpoint_root / "ckpt_final.pt"
+    ckpt_final = {
+        "model": model.state_dict(),
+        "opt": optimiser.state_dict(),
+        "step": total_steps,
+        "update": update_num,
+        "p2_policy": cfg["p2_policy"],
+    }
     if neural_p2:
         ckpt_final["opponent"] = opponent.state_dict()
     torch.save(ckpt_final, path)
-    print(f"Training complete. Final checkpoint: {path}")
+    elapsed_total = time.time() - t_start
+    print(f"Training complete in {_format_duration(elapsed_total)}. Final checkpoint: {path}")
+    _maybe_post_train_render(cfg, path)
     return model
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _parse() -> dict:
+    base = _cli_defaults()
     p = argparse.ArgumentParser(description="Train nightcall PPO agent")
     for k, v in DEFAULTS.items():
         if k == "p2_policy":
             p.add_argument(
                 "--p2-policy",
                 type=str,
-                default=v,
+                default=base["p2_policy"],
                 choices=["scripted", "neural"],
                 dest="p2_policy",
                 help="scripted=chase heuristic P2; neural=P2 from frozen policy on P2-obs",
@@ -380,10 +546,28 @@ def _parse() -> dict:
             continue
         t = type(v)
         if t == bool:
-            p.add_argument(f"--{k}", action="store_true", default=v)
+            p.add_argument(f"--{k}", action="store_true", default=base[k])
         else:
-            p.add_argument(f"--{k.replace('_','-')}", type=t, default=v,
-                           dest=k)
+            p.add_argument(
+                f"--{k.replace('_','-')}",
+                type=t,
+                default=base[k],
+                dest=k,
+            )
+    p.add_argument(
+        "--load-checkpoint",
+        type=str,
+        default=os.environ.get("LOAD_CHECKPOINT", "").strip(),
+        metavar="PATH",
+        dest="load_checkpoint",
+        help="Load model weights from a .pt file; use --resume to restore step count and optimizer.",
+    )
+    p.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=_truthy_env("RESUME"),
+        help="With --load-checkpoint, restore env-step count, update index, and optimizer state if saved.",
+    )
     return vars(p.parse_args())
 
 

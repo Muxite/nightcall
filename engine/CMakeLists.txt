@@ -19,6 +19,10 @@ target_include_directories(nightcall_engine
 # Adding SDL3/bgfx here would break Python training bindings and test isolation.
 target_compile_features(nightcall_engine PUBLIC cxx_std_20)
 
+if(NIGHTCALL_BUILD_PYTHON)
+    set_target_properties(nightcall_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 if(MSVC)
     target_compile_options(nightcall_engine PRIVATE /W4 /WX)
 else()

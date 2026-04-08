@@ -1,0 +1,37 @@
+# Training defaults: docker/train.env. Checkpoints -> volume checkpoints; artifacts -> ./results
+# Entrypoint: `python3 python/training/train.py` (env drives train + optional post-render).
+
+services:
+  train:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: nightcall-train:cpu
+    env_file:
+      - docker/train.env
+    volumes:
+      - ./tests:/workspace/tests
+      - nightcall_ckpts:/workspace/checkpoints
+      - ./results:/workspace/results
+
+  train-cuda:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cuda
+    image: nightcall-train:cuda
+    env_file:
+      - docker/train.env
+    volumes:
+      - ./tests:/workspace/tests
+      - nightcall_ckpts:/workspace/checkpoints
+      - ./results:/workspace/results
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  nightcall_ckpts:
